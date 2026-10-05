@@ -18,6 +18,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "hipc"
+version = "0.1.0"
+source = "git+https://github.com/VirgileHenry/hipc?rev=115d379#115d379016cff3454c7eb83386eee20335496124"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,6 +63,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "monet"
 version = "0.1.0"
 dependencies = [
+ "hipc",
  "serde",
  "serde_json",
  "tracing",

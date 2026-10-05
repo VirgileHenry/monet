@@ -51,10 +51,8 @@ let
   monet = pkgs.rustPlatform.buildRustPackage {
     pname = "monet";
     version = "0.1.0";
-
     src = monetSrc;
     cargoHash = "sha256-HfxNxB2rnQDb3hKLkmrsI06sfxstSPyXsIo8WwybUKg=";
-
     meta = with pkgs.lib; {
       description = "Per-workspace wallpaper switcher";
     };

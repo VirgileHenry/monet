@@ -1,58 +1,41 @@
-#[derive(serde::Deserialize)]
-struct Monitor {
-    name: String,
-    focused: bool,
-    #[serde(rename = "activeWorkspace")]
-    active_workspace: Workspace,
-}
-
-#[derive(serde::Deserialize)]
-struct Workspace {
-    id: i64,
-}
-
 /// Keep track of which workspace is active on which monitor.
 struct State {
     wallpapers: [std::path::PathBuf; WORKSPACE_COUNT],
-    focused_monitor: String,
-    monitor_workspace: std::collections::HashMap<String, usize>,
+    focused_monitor: hipc::types::MonitorName,
+    monitor_workspace: std::collections::HashMap<hipc::types::MonitorName, hipc::types::WorkspaceId>,
 }
 
 impl State {
-    fn init(xdg_config_dir: &str, hypr_dir: &str) -> std::io::Result<Self> {
+    fn init(xdg_config_dir: &str) -> std::io::Result<Self> {
         /* Build the wallpaper full path */
         let wallpapers = std::array::from_fn(|i| {
             let path = format!("{}/{}/{}", xdg_config_dir, WALLPAPER_DIR, WALLPAPERS[i]);
             std::path::PathBuf::from(path)
         });
 
-        /* Query the monitors from hyprland */
-        use std::io::Read;
-        use std::io::Write;
-
-        let mut s = std::os::unix::net::UnixStream::connect(format!("{hypr_dir}/.socket.sock"))?;
-        s.write_all(b"j/monitors")?;
-        let mut out = String::new();
-        s.read_to_string(&mut out)?;
-        let monitors: Vec<Monitor> = serde_json::from_str(&out).map_err(std::io::Error::other)?;
+        let monitors = hipc::commands::monitors()?;
 
         let mut focused = None;
         let mut monitor_workspace = std::collections::HashMap::new();
 
-        for m in monitors {
-            if m.focused {
-                focused = Some(m.name.clone());
+        for monitor in monitors {
+            if monitor.focused {
+                focused = Some(monitor.name.clone());
             }
-            let Ok(workspace_id) = usize::try_from(m.active_workspace.id) else {
-                tracing::warn!("Failed to get workspace id for monitor: {}", m.active_workspace.id);
+            let wallpaper_index = monitor.active_workspace.id.raw() - 1;
+            let wallpaper_index = match usize::try_from(wallpaper_index) {
+                Ok(index) => index,
+                Err(_) => {
+                    tracing::warn!("Unable to convert workspace id to wallpaper index: {}", wallpaper_index);
+                    continue;
+                }
+            };
+            let Some(wallpaper) = wallpapers.get(wallpaper_index) else {
+                tracing::warn!("Failed to get wallpaper for workspace id: {}", wallpaper_index);
                 continue;
             };
-            let Some(wallpaper) = workspace_id.checked_sub(1).and_then(|i| wallpapers.get(i)) else {
-                tracing::warn!("Failed to get wallpaper for workspace id: {}", workspace_id);
-                continue;
-            };
-            set_wallpaper(&m.name, wallpaper, "none", "0");
-            monitor_workspace.insert(m.name, workspace_id);
+            set_wallpaper(&monitor.name, wallpaper, "none", "0");
+            monitor_workspace.insert(monitor.name, monitor.active_workspace.id);
         }
 
         let Some(focused_monitor) = focused else {
@@ -66,43 +49,33 @@ impl State {
         })
     }
 
-    pub fn handle_event(&mut self, event: &str) -> std::io::Result<()> {
-        let &[event_kind, data] = event.split(">>").collect::<Vec<_>>().as_slice() else {
-            return Err(std::io::Error::other(format!("Invalid event: {event}")));
-        };
-        match event_kind {
-            "focusedmonv2" => {
-                let &[monitor, workspace] = data.split(',').collect::<Vec<_>>().as_slice() else {
-                    return Err(std::io::Error::other(format!("Invalid focusedmonv2 event data: {data}")));
-                };
-                self.focused_monitor = monitor.to_string();
-                let workspace_id = workspace
-                    .parse::<usize>()
-                    .map_err(|_| std::io::Error::other(format!("Invalid workspace id: {workspace}")))?;
-                self.monitor_workspace.insert(monitor.to_string(), workspace_id);
+    pub fn handle_event(&mut self, event: hipc::HyprlandEvent) -> std::io::Result<()> {
+        match event {
+            hipc::HyprlandEvent::FocusedMonitorV2 { monitor, workspace } => {
+                self.focused_monitor = monitor.clone();
+                self.monitor_workspace.insert(monitor, workspace);
             }
-            "workspacev2" => {
-                let &[workspace_id, _] = data.split(',').collect::<Vec<_>>().as_slice() else {
-                    return Err(std::io::Error::other(format!("Invalid workspacev2 event data: {data}")));
+            hipc::HyprlandEvent::WorkspaceV2 { id, .. } => {
+                let wallpaper_index = match usize::try_from(id.raw() - 1) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        tracing::warn!("Unable to convert workspace id to wallpaper index: {}", id.raw() - 1);
+                        return Ok(());
+                    }
                 };
-                let Ok(workspace) = workspace_id.parse::<usize>() else {
-                    /* Special workspace is fine, don't do anything */
+                let Some(wallpaper) = self.wallpapers.get(wallpaper_index) else {
+                    tracing::warn!("No wallpaper for workspace {}", id.raw());
                     return Ok(());
                 };
-                let Some(wallpaper) = workspace.checked_sub(1).and_then(|i| self.wallpapers.get(i)) else {
-                    tracing::warn!("No wallpaper for workspace {workspace}");
-                    return Ok(());
-                };
-
-                let (transition, angle) = match self.monitor_workspace.insert(self.focused_monitor.clone(), workspace) {
-                    Some(prev) => match prev.cmp(&workspace) {
+                let (transition, angle) = match self.monitor_workspace.insert(self.focused_monitor.clone(), id) {
+                    Some(prev) => match prev.cmp(&id) {
                         std::cmp::Ordering::Equal => return Ok(()),
                         std::cmp::Ordering::Less => ("wipe", "0"),
                         std::cmp::Ordering::Greater => ("wipe", "180"),
                     },
                     None => ("fade", "0"),
                 };
-                tracing::debug!("wallpaper transition to {:?} on {}", wallpaper, self.focused_monitor);
+                tracing::debug!("wallpaper transition to {:?} on {}", wallpaper, &*self.focused_monitor);
                 set_wallpaper(&self.focused_monitor, wallpaper, transition, angle);
             }
             _ => {}
@@ -143,26 +116,20 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let xdg_runtime_dir = get_env_var("XDG_RUNTIME_DIR")?;
-    let hyprland_instance_sig = get_env_var("HYPRLAND_INSTANCE_SIGNATURE")?;
+    let mut hyprland_socket = hipc::HyprlandEventSocket::connect()?;
 
-    let hypr_dir = format!("{xdg_runtime_dir}/hypr/{hyprland_instance_sig}");
-    let hypr_socket_path = format!("{hypr_dir}/.socket2.sock");
-    let hyprland_event_stream = std::os::unix::net::UnixStream::connect(hypr_socket_path)?;
-    let hyprland_event_stream = std::io::BufReader::new(hyprland_event_stream);
+    let mut state = State::init(&xdg_config_dir)?;
 
-    let mut state = State::init(&xdg_config_dir, &hypr_dir)?;
-
-    use std::io::BufRead;
-    for line in hyprland_event_stream.lines() {
-        if let Ok(line) = line {
-            if let Err(e) = state.handle_event(&line) {
-                tracing::error!("Unable to handle hyprland event: {e}")
+    loop {
+        match hyprland_socket.read() {
+            Ok(event) => {
+                if let Err(e) = state.handle_event(event) {
+                    tracing::error!("Unable to handle hyprland event: {e}");
+                }
             }
+            Err(e) => tracing::error!("Unable to parse hyprland event: {e}"),
         }
     }
-
-    Ok(())
 }
 
 fn init_logging() {
