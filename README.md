@@ -45,14 +45,14 @@ let
   monetSrc = pkgs.fetchFromGitHub {
     owner = "VirgileHenry";
     repo = "monet";
-    rev = "d58d571ad188af0b6232cd8b36da62dcde58e321";
-    sha256 = "sha256-KYtwkKLWLsAKKuA/aMSnUcCt8bwGj1GKbIwhy/04weY=";
+    rev = "842cd4af16bf79fdfce44af3a7b7a6dd47cffe87"; # or whatever commit you want
+    sha256 = "<git sha>";
   };
   monet = pkgs.rustPlatform.buildRustPackage {
     pname = "monet";
     version = "0.1.0";
     src = monetSrc;
-    cargoHash = "sha256-HfxNxB2rnQDb3hKLkmrsI06sfxstSPyXsIo8WwybUKg=";
+    cargoHash = "<cargo sha>";
     meta = with pkgs.lib; {
       description = "Per-workspace wallpaper switcher";
     };
