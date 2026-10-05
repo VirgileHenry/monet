@@ -85,14 +85,13 @@ impl State {
                 let &[workspace_id, _] = data.split(',').collect::<Vec<_>>().as_slice() else {
                     return Err(std::io::Error::other(format!("Invalid workspacev2 event data: {data}")));
                 };
-                let workspace = workspace_id
-                    .parse::<usize>()
-                    .map_err(|_| std::io::Error::other(format!("Invalid workspace id: {workspace_id}")))?;
-
+                let Ok(workspace) = workspace_id.parse::<usize>() else {
+                    /* Special workspace is fine, don't do anything */
+                    return Ok(());
+                };
                 let Some(wallpaper) = workspace.checked_sub(1).and_then(|i| self.wallpapers.get(i)) else {
-                    return Err(std::io::Error::other(format!(
-                        "No known wallpaper for worskpace id: {workspace}"
-                    )));
+                    tracing::warn!("No wallpaper for workspace {workspace}");
+                    return Ok(());
                 };
 
                 let (transition, angle) = match self.monitor_workspace.insert(self.focused_monitor.clone(), workspace) {
@@ -136,7 +135,7 @@ const WALLPAPERS: [&'static str; WORKSPACE_COUNT] = [
 fn main() -> std::io::Result<()> {
     init_logging();
 
-    let xdg_config_dir = match get_env_var("XDG_CONFIG_DIR") {
+    let xdg_config_dir = match get_env_var("XDG_CONFIG_HOME") {
         Ok(var) => var,
         Err(_) => {
             let home = get_env_var("HOME")?;
