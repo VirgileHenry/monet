@@ -1,7 +1,7 @@
 /// Keep track of which workspace is active on which monitor.
 struct State {
     wallpapers: [std::path::PathBuf; WORKSPACE_COUNT],
-    focused_monitor: hipc::types::MonitorName,
+    focused_monitor: Option<hipc::types::MonitorName>,
     monitor_workspace: std::collections::HashMap<hipc::types::MonitorName, hipc::types::WorkspaceId>,
 }
 
@@ -13,14 +13,25 @@ impl State {
             std::path::PathBuf::from(path)
         });
 
+        let mut result = Self {
+            wallpapers,
+            focused_monitor: None,
+            monitor_workspace: std::collections::HashMap::new(),
+        };
+        result.load_from_monitors()?;
+
+        Ok(result)
+    }
+
+    fn load_from_monitors(&mut self) -> std::io::Result<()> {
         let monitors = hipc::commands::monitors()?;
 
-        let mut focused = None;
-        let mut monitor_workspace = std::collections::HashMap::new();
+        let mut focused_monitor = None;
+        self.monitor_workspace.clear();
 
         for monitor in monitors {
             if monitor.focused {
-                focused = Some(monitor.name.clone());
+                focused_monitor = Some(monitor.name.clone());
             }
             let wallpaper_index = monitor.active_workspace.id.raw() - 1;
             let wallpaper_index = match usize::try_from(wallpaper_index) {
@@ -30,29 +41,23 @@ impl State {
                     continue;
                 }
             };
-            let Some(wallpaper) = wallpapers.get(wallpaper_index) else {
+            let Some(wallpaper) = self.wallpapers.get(wallpaper_index) else {
                 tracing::warn!("Failed to get wallpaper for workspace id: {}", wallpaper_index);
                 continue;
             };
-            set_wallpaper(&monitor.name, wallpaper, "none", "0");
-            monitor_workspace.insert(monitor.name, monitor.active_workspace.id);
+            set_wallpaper(&monitor.name, wallpaper);
+            self.monitor_workspace.insert(monitor.name, monitor.active_workspace.id);
         }
 
-        let Some(focused_monitor) = focused else {
-            return Err(std::io::Error::other(format!("Failed to find a focused workspace!")));
-        };
+        self.focused_monitor = focused_monitor;
 
-        Ok(Self {
-            wallpapers,
-            focused_monitor,
-            monitor_workspace,
-        })
+        Ok(())
     }
 
     pub fn handle_event(&mut self, event: hipc::HyprlandEvent) -> std::io::Result<()> {
         match event {
             hipc::HyprlandEvent::FocusedMonitorV2 { monitor, workspace } => {
-                self.focused_monitor = monitor.clone();
+                self.focused_monitor = Some(monitor.clone());
                 self.monitor_workspace.insert(monitor, workspace);
             }
             hipc::HyprlandEvent::WorkspaceV2 { id, .. } => {
@@ -67,16 +72,16 @@ impl State {
                     tracing::warn!("No wallpaper for workspace {}", id.raw());
                     return Ok(());
                 };
-                let (transition, angle) = match self.monitor_workspace.insert(self.focused_monitor.clone(), id) {
-                    Some(prev) => match prev.cmp(&id) {
-                        std::cmp::Ordering::Equal => return Ok(()),
-                        std::cmp::Ordering::Less => ("wipe", "0"),
-                        std::cmp::Ordering::Greater => ("wipe", "180"),
-                    },
-                    None => ("fade", "0"),
+                let Some(focused_monitor) = &self.focused_monitor else {
+                    tracing::warn!("No focued monitor, unable to make transition");
+                    return Ok(());
                 };
-                tracing::debug!("wallpaper transition to {:?} on {}", wallpaper, &*self.focused_monitor);
-                set_wallpaper(&self.focused_monitor, wallpaper, transition, angle);
+                self.monitor_workspace.insert(focused_monitor.clone(), id);
+                tracing::debug!("wallpaper transition to {:?} on {}", wallpaper, &**focused_monitor);
+                set_wallpaper(focused_monitor, wallpaper);
+            }
+            hipc::HyprlandEvent::MonitorAddedV2 { .. } | hipc::HyprlandEvent::MonitorRemovedV2 { .. } => {
+                self.load_from_monitors()?;
             }
             _ => {}
         }
@@ -151,15 +156,9 @@ fn get_env_var(key: &str) -> std::io::Result<String> {
     }
 }
 
-fn set_wallpaper(monitor: &str, path: &std::path::Path, transition: &str, angle: &str) {
+fn set_wallpaper(monitor: &str, path: &std::path::Path) {
     let mut cmd = std::process::Command::new("awww");
-    cmd.args(["img", "-o", monitor])
-        .arg(path)
-        .args(["--transition-type", transition])
-        .args(["--transition-angle", angle])
-        .args(["--transition-duration", "0.5"])
-        .args(["--transition-bezier", "0.22,1,0.36,1"])
-        .args(["--transition-fps", "60"]);
+    cmd.args(["img", "-o", monitor]).arg(path);
     std::thread::spawn(move || {
         if let Err(e) = cmd.status() {
             tracing::error!("awww failed: {e}");
