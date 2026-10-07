@@ -158,7 +158,7 @@ fn get_env_var(key: &str) -> std::io::Result<String> {
 
 fn set_wallpaper(monitor: &str, path: &std::path::Path) {
     let mut cmd = std::process::Command::new("awww");
-    cmd.args(["img", "-o", monitor]).arg(path);
+    cmd.args(["img", "-o", monitor]).args(["--transition-type", "none"]).arg(path);
     std::thread::spawn(move || {
         if let Err(e) = cmd.status() {
             tracing::error!("awww failed: {e}");
